@@ -132,7 +132,7 @@ if __name__ == '__main__':
 
     # Task parameters (should match training)
     parser.add_argument('--task_type', type=str, default='single_feature',
-                        choices=['single_feature', 'xor'],
+                        choices=['single_feature', 'xor', 'simple_rule_with_exception'],
                         help='Type of task')
     parser.add_argument('--n_features', type=int, default=4,
                         help='Number of features per stimulus')

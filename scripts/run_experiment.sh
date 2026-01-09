@@ -69,8 +69,9 @@ echo ""
 echo "=============================================="
 echo "Step 3: Evaluating few-shot generalization..."
 echo "=============================================="
+echo "  Evaluation task: simple_rule_with_exception"
 python -m src.evaluate \
-    --task_type $TASK_TYPE \
+    --task_type simple_rule_with_exception \
     --n_features $N_FEATURES \
     --p_noise $P_NOISE \
     --checkpoint $OUTPUT_DIR/best_model.pt \

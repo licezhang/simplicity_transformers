@@ -24,7 +24,8 @@ def main(args):
         n_examples_per_prompt=args.n_examples,
         dataset_size=args.num_samples,
         p_noise=args.p_noise,
-        seed=args.seed
+        seed=args.seed,
+        curriculum=args.curriculum
     )
 
     print(f"Dataset size: {len(dataset)}")
@@ -47,7 +48,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate ICL data')
 
     parser.add_argument('--task_type', type=str, default='single_feature',
-                        choices=['single_feature', 'xor'],
+                        choices=['single_feature', 'xor', 'simple_rule_with_exception'],
                         help='Type of task')
     parser.add_argument('--n_features', type=int, default=4,
                         help='Number of features')
@@ -61,6 +62,8 @@ if __name__ == '__main__':
                         help='Random seed')
     parser.add_argument('--show', type=int, default=5,
                         help='Number of examples to display')
+    parser.add_argument('--curriculum', action='store_true',
+                        help='Order examples with rule-consistent before exceptions (for simple_rule_with_exception)')
 
     args = parser.parse_args()
     main(args)

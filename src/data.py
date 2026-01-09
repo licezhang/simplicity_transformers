@@ -93,7 +93,7 @@ class TaskGenerator:
                  p_noise: float = 0.0, seed: int = None):
         """
         Args:
-            task_type: 'single_feature' or 'xor'
+            task_type: 'single_feature', 'xor', or 'simple_rule_with_exception'
             n_features: Number of features per stimulus
             relevant_features: Which features determine the label
             p_noise: Probability of flipping label (for single_feature only)
@@ -113,6 +113,12 @@ class TaskGenerator:
             elif task_type == 'xor':
                 # Choose 2 features for XOR
                 self.relevant_features = list(np.random.choice(n_features, size=2, replace=False))
+            elif task_type == 'simple_rule_with_exception':
+                # Choose 1 feature for simple rule, 2 other features for XOR exception
+                # Format: [simple_rule_feature, exception_feature_1, exception_feature_2]
+                all_features = list(range(n_features))
+                np.random.shuffle(all_features)
+                self.relevant_features = all_features[:3]  # First is simple rule, next 2 are XOR exception
             else:
                 raise ValueError(f"Unknown task_type: {task_type}")
         else:
@@ -134,6 +140,19 @@ class TaskGenerator:
         elif self.task_type == 'xor':
             # Label is XOR of two features
             label = feature_values[self.relevant_features[0]] ^ feature_values[self.relevant_features[1]]
+        elif self.task_type == 'simple_rule_with_exception':
+            # Label is based on simple rule feature, but with exceptions for specific feature combination
+            # Simple rule: label = relevant_features[0]
+            # Exception: when BOTH relevant_features[1] and relevant_features[2] = 1, flip the label
+            # This makes exactly 1/4 of stimuli exceptions (only the (1,1) combination)
+            simple_rule_label = feature_values[self.relevant_features[0]]
+            exception_condition = (feature_values[self.relevant_features[1]] == 1 and
+                                  feature_values[self.relevant_features[2]] == 1)
+
+            if exception_condition:
+                label = 1 - simple_rule_label  # Exception: flip the simple rule
+            else:
+                label = simple_rule_label  # Follow simple rule
         else:
             raise ValueError(f"Unknown task_type: {self.task_type}")
 
@@ -156,7 +175,8 @@ class ICLDataset(Dataset):
                  p_noise: float = 0.0,
                  relevant_features: List[int] = None,
                  seed: int = 42,
-                 p_query_in_context: float = 0.0):
+                 p_query_in_context: float = 0.0,
+                 curriculum: bool = False):
         """
         Args:
             task_type: 'single_feature' or 'xor'
@@ -167,6 +187,7 @@ class ICLDataset(Dataset):
             relevant_features: Which features determine labels
             seed: Random seed
             p_query_in_context: Probability that query stimulus also appears in context
+            curriculum: If True, order examples for simple_rule_with_exception so rule-consistent come before exceptions
         """
         self.task_type = task_type
         self.n_features = n_features
@@ -174,6 +195,7 @@ class ICLDataset(Dataset):
         self.dataset_size = dataset_size
         self.seed = seed
         self.p_query_in_context = p_query_in_context
+        self.curriculum = curriculum
 
         # Initialize generators
         self.stimulus_gen = StimulusGenerator(n_features, seed)
@@ -220,6 +242,30 @@ class ICLDataset(Dataset):
             label = task_gen.get_label(feature_values, apply_noise=True)
             examples.append(f"{stimulus}:{label}")
             used_stimuli.add(stimulus)
+
+        # Apply curriculum ordering if enabled for simple_rule_with_exception
+        if self.curriculum and self.task_type == 'simple_rule_with_exception':
+            # Separate examples into rule-consistent and exceptions
+            rule_consistent = []
+            exceptions = []
+
+            for example in examples:
+                stimulus = example.split(':')[0]
+                feature_values = stimulus_gen.stimulus_to_feature_values(stimulus)
+
+                # Check if this is an exception (both exception features are 1)
+                exception_condition = (
+                    feature_values[task_gen.relevant_features[1]] == 1 and
+                    feature_values[task_gen.relevant_features[2]] == 1
+                )
+
+                if exception_condition:
+                    exceptions.append(example)
+                else:
+                    rule_consistent.append(example)
+
+            # Reorder: rule-consistent first, then exceptions
+            examples = rule_consistent + exceptions
 
         # With probability p_query_in_context, force the query to be one of the demos (pure copy task)
         if self.p_query_in_context == 0:
