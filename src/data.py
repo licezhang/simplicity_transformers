@@ -8,6 +8,41 @@ import numpy as np
 from typing import List, Tuple, Dict
 
 
+# class StimulusGenerator:
+#     """Generates stimuli with N features, each having 2 possible values."""
+
+#     def __init__(self, n_features: int = 4, seed: int = 42):
+#         self.n_features = n_features
+#         self.seed = seed
+#         if seed is not None:
+#             np.random.seed(seed)
+
+#         # Randomly sample 2 symbols to use for all features
+#         alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+#         self.symbols = list(np.random.choice(list(alphabet), size=2, replace=False))
+
+#         # Use the same 2 symbols for all features
+#         self.feature_symbols = [self.symbols for _ in range(n_features)]
+
+#     def generate_stimulus(self) -> str:
+#         """Generate a single stimulus (e.g., 'ACEG')."""
+#         stimulus = ''
+#         for feature_idx in range(self.n_features):
+#             value = np.random.randint(0, 2)
+#             stimulus += self.feature_symbols[feature_idx][value]
+#         return stimulus
+
+#     def stimulus_to_feature_values(self, stimulus: str) -> List[int]:
+#         """Convert stimulus string to feature values [0 or 1 for each feature]."""
+#         values = []
+#         for i, char in enumerate(stimulus):
+#             # Find which value (0 or 1) this character represents for feature i
+#             if char == self.feature_symbols[i][0]:
+#                 values.append(0)
+#             else:
+#                 values.append(1)
+#         return values
+
 class StimulusGenerator:
     """Generates stimuli with N features, each having 2 possible values."""
 
@@ -17,12 +52,19 @@ class StimulusGenerator:
         if seed is not None:
             np.random.seed(seed)
 
-        # Randomly sample 2 symbols to use for all features
-        alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        self.symbols = list(np.random.choice(list(alphabet), size=2, replace=False))
+        alphabet = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
 
-        # Use the same 2 symbols for all features
-        self.feature_symbols = [self.symbols for _ in range(n_features)]
+        # Sample 2 symbols PER feature
+        # Prefer sampling without replacement when possible; fall back to replacement if n_features is large.
+        n_needed = 2 * n_features
+        if n_needed <= len(alphabet):
+            chosen = list(np.random.choice(alphabet, size=n_needed, replace=False))
+        else:
+            chosen = list(np.random.choice(alphabet, size=n_needed, replace=True))
+
+        self.feature_symbols = []
+        for f in range(n_features):
+            self.feature_symbols.append([chosen[2*f], chosen[2*f + 1]])
 
     def generate_stimulus(self) -> str:
         """Generate a single stimulus (e.g., 'ACEG')."""
@@ -36,7 +78,6 @@ class StimulusGenerator:
         """Convert stimulus string to feature values [0 or 1 for each feature]."""
         values = []
         for i, char in enumerate(stimulus):
-            # Find which value (0 or 1) this character represents for feature i
             if char == self.feature_symbols[i][0]:
                 values.append(0)
             else:
@@ -114,7 +155,8 @@ class ICLDataset(Dataset):
                  dataset_size: int = 1000,
                  p_noise: float = 0.0,
                  relevant_features: List[int] = None,
-                 seed: int = 42):
+                 seed: int = 42,
+                 p_query_in_context: float = 0.0):
         """
         Args:
             task_type: 'single_feature' or 'xor'
@@ -124,12 +166,14 @@ class ICLDataset(Dataset):
             p_noise: Label noise probability (single_feature only)
             relevant_features: Which features determine labels
             seed: Random seed
+            p_query_in_context: Probability that query stimulus also appears in context
         """
         self.task_type = task_type
         self.n_features = n_features
         self.n_examples_per_prompt = n_examples_per_prompt
         self.dataset_size = dataset_size
         self.seed = seed
+        self.p_query_in_context = p_query_in_context
 
         # Initialize generators
         self.stimulus_gen = StimulusGenerator(n_features, seed)
@@ -145,48 +189,55 @@ class ICLDataset(Dataset):
             self.prompts.append(prompt)
             self.labels.append(label)
 
+
     def _generate_prompt(self) -> Tuple[str, int]:
         """Generate a single prompt with k labeled examples + 1 query."""
-        # Create a new stimulus generator for each prompt to use different symbols
         stimulus_gen = StimulusGenerator(
             n_features=self.n_features,
-            seed=None  # Don't set seed to get different symbols each time
+            seed=None
         )
 
-        # Create a new task generator for each prompt to randomize relevant features
         task_gen = TaskGenerator(
             task_type=self.task_type,
             n_features=self.n_features,
-            relevant_features=None,  # Will be randomly chosen
+            relevant_features=None,
             p_noise=self.task_gen.p_noise,
-            seed=None  # Don't set seed to allow randomization
+            seed=None
         )
 
         examples = []
         used_stimuli = set()
 
-        # Generate k labeled examples (noise can be applied here)
+        if self.p_query_in_context == 0:
+            query_stimulus = stimulus_gen.generate_stimulus()
+
         for _ in range(self.n_examples_per_prompt):
             stimulus = stimulus_gen.generate_stimulus()
+            # check if stimulus is the query stimulus when p_query_in_context == 0
+            while self.p_query_in_context == 0 and stimulus == query_stimulus:
+                stimulus = stimulus_gen.generate_stimulus()
             feature_values = stimulus_gen.stimulus_to_feature_values(stimulus)
             label = task_gen.get_label(feature_values, apply_noise=True)
             examples.append(f"{stimulus}:{label}")
             used_stimuli.add(stimulus)
 
-        # Generate query stimulus (NO noise applied to ground truth label)
-        # Ensure query stimulus is not one that was already shown with a label
-        query_stimulus = stimulus_gen.generate_stimulus()
-        while query_stimulus in used_stimuli:
+        # With probability p_query_in_context, force the query to be one of the demos (pure copy task)
+        if self.p_query_in_context == 0:
+            pass
+        elif np.random.random() < self.p_query_in_context and len(used_stimuli) > 0:
+            query_stimulus = np.random.choice(list(used_stimuli))
+        else:
             query_stimulus = stimulus_gen.generate_stimulus()
 
         query_feature_values = stimulus_gen.stimulus_to_feature_values(query_stimulus)
         query_label = task_gen.get_label(query_feature_values, apply_noise=False)
-        examples.append(f"{query_stimulus}:")
 
-        # Join with separator
+        # Query marker AFTER stimulus, then ':' (no label token after)
+        examples.append(f"{query_stimulus}?:")
+
         prompt = ";".join(examples)
-
         return prompt, query_label
+
 
     def __len__(self) -> int:
         return self.dataset_size
@@ -211,7 +262,7 @@ class ICLDataset(Dataset):
             idx += 1
 
         # Add label tokens and separators
-        for token in ['0', '1', ':', ';']:
+        for token in ['0', '1', ':', ';', '?']:
             vocab[token] = idx
             idx += 1
 
