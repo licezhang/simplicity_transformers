@@ -8,41 +8,6 @@ import numpy as np
 from typing import List, Tuple, Dict
 
 
-# class StimulusGenerator:
-#     """Generates stimuli with N features, each having 2 possible values."""
-
-#     def __init__(self, n_features: int = 4, seed: int = 42):
-#         self.n_features = n_features
-#         self.seed = seed
-#         if seed is not None:
-#             np.random.seed(seed)
-
-#         # Randomly sample 2 symbols to use for all features
-#         alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-#         self.symbols = list(np.random.choice(list(alphabet), size=2, replace=False))
-
-#         # Use the same 2 symbols for all features
-#         self.feature_symbols = [self.symbols for _ in range(n_features)]
-
-#     def generate_stimulus(self) -> str:
-#         """Generate a single stimulus (e.g., 'ACEG')."""
-#         stimulus = ''
-#         for feature_idx in range(self.n_features):
-#             value = np.random.randint(0, 2)
-#             stimulus += self.feature_symbols[feature_idx][value]
-#         return stimulus
-
-#     def stimulus_to_feature_values(self, stimulus: str) -> List[int]:
-#         """Convert stimulus string to feature values [0 or 1 for each feature]."""
-#         values = []
-#         for i, char in enumerate(stimulus):
-#             # Find which value (0 or 1) this character represents for feature i
-#             if char == self.feature_symbols[i][0]:
-#                 values.append(0)
-#             else:
-#                 values.append(1)
-#         return values
-
 class StimulusGenerator:
     """Generates stimuli with N features, each having 2 possible values."""
 
@@ -205,11 +170,13 @@ class ICLDataset(Dataset):
         np.random.seed(seed)
         self.prompts = []
         self.labels = []
+        self.is_exception = []
 
         for _ in range(dataset_size):
-            prompt, label = self._generate_prompt()
+            prompt, label, is_exc = self._generate_prompt()
             self.prompts.append(prompt)
             self.labels.append(label)
+            self.is_exception.append(is_exc)
 
 
     def _generate_prompt(self) -> Tuple[str, int]:
@@ -281,15 +248,32 @@ class ICLDataset(Dataset):
         # Query marker AFTER stimulus, then ':' (no label token after)
         examples.append(f"{query_stimulus}?:")
 
+        is_exception = self._is_exception(query_feature_values, task_gen)
+
         prompt = ";".join(examples)
-        return prompt, query_label
+        return prompt, query_label, is_exception
+    
+
+    def _is_exception(self, feature_values, task_gen):
+        """
+        Returns True if feature_values correspond to an exception
+        for simple_rule_with_exception tasks.
+        """
+        if self.task_type != 'simple_rule_with_exception':
+            return False
+
+        return (
+            feature_values[task_gen.relevant_features[1]] == 1 and
+            feature_values[task_gen.relevant_features[2]] == 1
+        )
 
 
     def __len__(self) -> int:
         return self.dataset_size
 
     def __getitem__(self, idx: int) -> Tuple[str, int]:
-        return self.prompts[idx], self.labels[idx]
+        return self.prompts[idx], self.labels[idx], self.is_exception[idx]
+
 
     def get_vocab(self) -> Dict[str, int]:
         """

@@ -9,6 +9,11 @@ from torch.utils.data import DataLoader
 import argparse
 import os
 from pathlib import Path
+import json
+import csv
+import numpy as np
+from datetime import datetime
+
 
 # set the current working directory to /mnt/big/jirko/simplicity_transformers
 os.chdir('/mnt/big/jirko/simplicity_transformers') 
@@ -28,7 +33,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, vocab, aux_loss
     zero_id = vocab['0']
     one_id = vocab['1']
 
-    for batch_idx, (input_ids, labels, padding_mask) in enumerate(dataloader):
+    for batch_idx, (input_ids, labels, padding_mask, is_exception) in enumerate(dataloader):
         input_ids = input_ids.to(device)
         labels = labels.to(device)
         padding_mask = padding_mask.to(device)
@@ -89,7 +94,7 @@ def evaluate(model, dataloader, criterion, device):
     total_samples = 0
 
     with torch.no_grad():
-        for input_ids, labels, padding_mask in dataloader:
+        for input_ids, labels, padding_mask, is_exception in dataloader:
             input_ids = input_ids.to(device)
             labels = labels.to(device)
             padding_mask = padding_mask.to(device)
@@ -179,6 +184,24 @@ def main(args):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
+    # --- Loss logging setup ---
+    # use args.losses_dir
+    losses_dir = args.losses_dir
+    losses_csv_path = os.path.join(losses_dir, "losses.csv")
+    losses_npz_path = os.path.join(losses_dir, "losses.npz")
+
+    # If CSV doesn't exist yet, write header
+    if not os.path.exists(losses_csv_path):
+        with open(losses_csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "train_loss", "train_acc", "eval_loss", "eval_acc"])
+
+    # In-memory lists for convenience (will be saved periodically)
+    train_losses = []
+    train_accs = []
+    eval_losses = []
+    eval_accs = []
+
     # Training loop
     print(f"\nTraining for {args.epochs} epochs...")
     best_eval_acc = 0
@@ -190,15 +213,38 @@ def main(args):
         print(f"Epoch {epoch+1}/{args.epochs} | "
               f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
               f"Eval Loss: {eval_loss:.4f} Acc: {eval_acc:.4f}")
+        
+        # --- Append to memory lists ---
+        train_losses.append(float(train_loss))
+        train_accs.append(float(train_acc))
+        eval_losses.append(float(eval_loss))
+        eval_accs.append(float(eval_acc))
+
+        # --- Append CSV (flush each epoch so notebook can watch progress) ---
+        with open(losses_csv_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch + 1, train_loss, train_acc, eval_loss, eval_acc])
+
+        # --- Save compact numpy arrays (overwrites each epoch) ---
+        np.savez_compressed(
+            losses_npz_path,
+            train_losses=np.array(train_losses, dtype=np.float32),
+            train_accs=np.array(train_accs, dtype=np.float32),
+            eval_losses=np.array(eval_losses, dtype=np.float32),
+            eval_accs=np.array(eval_accs, dtype=np.float32),
+        )
 
         # Save best model
         if eval_acc > best_eval_acc:
             best_eval_acc = eval_acc
-            save_path = os.path.join(args.output_dir, 'best_model.pt')
+            # save_path = os.path.join(args.output_dir, f'best_model_p_query={args.p_query_in_context}_n_examples={args.n_examples}.pt')
+            # best model
+            save_path = os.path.join(args.checkpoints_dir, f'best_model_p_query={args.p_query_in_context}_n_examples={args.n_examples}.pt')
             save_checkpoint(model, optimizer, epoch, eval_loss, save_path)
 
     # Save final model
-    final_path = os.path.join(args.output_dir, 'final_model.pt')
+    # final_path = os.path.join(args.output_dir, f'final_model_p_query={args.p_query_in_context}_n_examples={args.n_examples}.pt')
+    final_path = os.path.join(args.checkpoints_dir, f'final_model_p_query={args.p_query_in_context}_n_examples={args.n_examples}.pt')
     save_checkpoint(model, optimizer, args.epochs, eval_loss, final_path)
 
     print(f"\nTraining complete! Best eval accuracy: {best_eval_acc:.4f}")
@@ -221,7 +267,7 @@ if __name__ == '__main__':
                         help='Number of evaluation prompts')
     parser.add_argument('--p_noise', type=float, default=0.0,
                         help='Label noise probability (single_feature only)')
-    parser.add_argument('--p_query_in_context', type=float, default=0,
+    parser.add_argument('--p_query_in_context', type=float, default=0.05,
                         help='Probability that the query stimulus is included among the in-context examples')
 
     # Model parameters
@@ -233,7 +279,7 @@ if __name__ == '__main__':
                         help='Number of transformer layers')
     parser.add_argument('--dim_feedforward', type=int, default=256,
                         help='Feedforward dimension')
-    parser.add_argument('--dropout', type=float, default=0.1,
+    parser.add_argument('--dropout', type=float, default=0.05,
                         help='Dropout probability')
 
     # Training parameters
@@ -241,8 +287,10 @@ if __name__ == '__main__':
                         help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size')
-    parser.add_argument('--lr', type=float, default=0.0005,
-                        help='Learning rate')
+    # parser.add_argument('--lr', type=float, default=0.0005,
+    #                     help='Learning rate')
+    parser.add_argument('--lr', type=float, default=0.0001,
+                    help='Learning rate')
 
     # Other
     parser.add_argument('--seed', type=int, default=42,
@@ -255,6 +303,35 @@ if __name__ == '__main__':
                         help='Weight for auxiliary demo-label loss (0 disables)')
 
     args = parser.parse_args()
+
+    # format parameters for folder name (safe chars)
+    p_q_str = f"{args.p_query_in_context:.3f}".replace('.', 'p')
+    run_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_name = f"{run_time}_task={args.task_type}_pQ={p_q_str}_k={args.n_examples}_s={args.seed}"
+    run_dir = os.path.join(args.output_dir, run_name)
+    Path(run_dir).mkdir(parents=True, exist_ok=True)
+
+    # Create subfolders
+    checkpoints_dir = os.path.join(run_dir, "checkpoints")
+    losses_dir = os.path.join(run_dir, "losses")
+    Path(checkpoints_dir).mkdir(parents=True, exist_ok=True)
+    Path(losses_dir).mkdir(parents=True, exist_ok=True)
+
+    # Save a config file (human readable) for reproducibility
+    cfg_path = os.path.join(run_dir, "config.json")
+    with open(cfg_path, "w") as f:
+        # convert Namespace to dict but keep only simple types
+        import json
+        args_dict = vars(args).copy()
+        # convert any non-serializable values if needed
+        json.dump(args_dict, f, indent=2)
+
+    # Now pass run_dir into main or set it on args for downstream use
+    args.run_dir = run_dir
+    args.checkpoints_dir = checkpoints_dir
+    args.losses_dir = losses_dir
+
+    print(f"Run directory: {run_dir}")
 
     # Create output directory
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)

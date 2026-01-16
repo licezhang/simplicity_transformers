@@ -53,7 +53,7 @@ def collate_fn(batch: List[Tuple[str, int]], vocab: Dict[str, int]):
         labels: [batch_size] - target labels
         padding_mask: [batch_size, max_seq_len] - True for padding positions
     """
-    prompts, labels = zip(*batch)
+    prompts, labels, is_exception = zip(*batch)
 
     # Tokenize all prompts
     tokenized = [tokenize_prompt(p, vocab) for p in prompts]
@@ -80,7 +80,7 @@ def collate_fn(batch: List[Tuple[str, int]], vocab: Dict[str, int]):
     labels = torch.tensor(labels, dtype=torch.long)
     padding_mask = torch.tensor(padding_mask, dtype=torch.bool)
 
-    return input_ids, labels, padding_mask
+    return input_ids, labels, padding_mask, torch.tensor(is_exception, dtype=torch.bool)
 
 
 def save_checkpoint(model, optimizer, epoch, loss, path):

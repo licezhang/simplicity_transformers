@@ -37,7 +37,7 @@ def main(args):
     print(f"\nShowing first {min(args.show, len(dataset))} examples:\n")
 
     for i in range(min(args.show, len(dataset))):
-        prompt, label = dataset[i]
+        prompt, label, _ = dataset[i]
         print(f"Example {i+1}:")
         print(f"Prompt: {prompt}")
         print(f"Label:  {label}")
